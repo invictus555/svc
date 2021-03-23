@@ -60,14 +60,10 @@ private:
     
     void initH264Decoder();
     
-    void initSVCSpatialEncoder(int width, int height);
+    void initSVCH264Encoder(int width, int height);
     
-    void initSVCTemporalEncoder(int width, int height);
-
-    void initSVCSpatialDecoders();
-    
-    void initSVCTemporalDecoders();
-    
+    void initSVCH264Decoders();
+        
     std::string createExtraInfo(int temporalId, int spatialId, SpatialData &data);
 
 private:
@@ -82,10 +78,8 @@ private:
     ReadThreadShr readThread_;              // read thread instance
     H264DecoderShr h264Decoder_;            // h264 decoder context
     SpatialDataVec spatialSettings_;        // to store all svc spatial data setting
-    SVCEncoderShr svcTemporalEncoder_;      // svc encoder  context
-    SVCEncoderShr svcSpatialEncoder_;       // svc encoder  context
-    SVCDecoderShrVec svcSpatialDecoders_;   // all decoder about svc decoding
-    SVCDecoderShrVec svcTemporalDecoders_;  // all decoder about svc decoding
+    SVCEncoderShr svcH264Encoder_;          // svc encoder  context
+    SVCDecoderShrVec svcH264Decoders_;      // all decoder about svc decoding
 };
 
 #endif /* SVCProj_hpp */

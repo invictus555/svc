@@ -8,7 +8,7 @@
 #include "SVCProj.hpp"
 #include "Localize.hpp"
 
-SVCProj::SVCProj(int temporalNum, int spatialNum, std::initializer_list<SpatialData> spatialList): svcTemporalNum_(temporalNum), svcSpatialNum_(spatialNum), stop_(false), fmtCtx_(NULL), readThread_(NULL), svcSpatialDecoders_(SVCDecoderShrVec(MAX_SPATIAL_LAYER_NUM, NULL)), h264Decoder_(NULL), started_(false), svcTemporalEncoder_(NULL), svcSpatialEncoder_(NULL), syncQueueMaxSize_(50), svcTemporalDecoders_(SVCDecoderShrVec(MAX_TEMPORAL_LAYER_NUM, NULL)) {
+SVCProj::SVCProj(int temporalNum, int spatialNum, std::initializer_list<SpatialData> spatialList): svcTemporalNum_(temporalNum), svcSpatialNum_(spatialNum), stop_(false), fmtCtx_(NULL), readThread_(NULL), svcH264Decoders_(SVCDecoderShrVec(MAX_SPATIAL_LAYER_NUM * MAX_TEMPORAL_LAYER_NUM, NULL)), h264Decoder_(NULL), started_(false), svcH264Encoder_(NULL), syncQueueMaxSize_(50) {
     
     svcTemporalNum_ = std::max(std::min(svcTemporalNum_, MAX_TEMPORAL_LAYER_NUM), 1);
     svcSpatialNum_ = std::max(std::min(static_cast<int>(spatialList.size()), std::min(svcSpatialNum_, MAX_SPATIAL_LAYER_NUM)), 1);
@@ -54,18 +54,12 @@ void SVCProj::start(std::string &url, std::string &dumpDir, int maxSize, int log
     // 1. init one h264 decoder
     initH264Decoder();
     
-    // 2. init one spatial svc encoder
-    initSVCSpatialEncoder(picWidth, picHeight);
-    
-    // 3. create a temporal svc encoder
-    initSVCTemporalEncoder(picWidth, picHeight);
+    // 2. init one svc encoder
+    initSVCH264Encoder(picWidth, picHeight);
     
     // 4. init several svc spatial decoders
-    initSVCSpatialDecoders();
-    
-    // 5. init several svc temporal decoders
-    initSVCTemporalDecoders();
-    
+    initSVCH264Decoders();
+        
     // read packet from input media file
     readThread_ = std::make_shared<std::thread>([this]{
         while (!stop_) {
@@ -116,23 +110,11 @@ void SVCProj::stop() {
         h264Decoder_->stop();
     }
     
-    if (svcSpatialEncoder_) {  // stop svc encoder
-        svcSpatialEncoder_->stop();
+    if (svcH264Encoder_) {  // stop svc encoder
+        svcH264Encoder_->stop();
     }
     
-    if (svcTemporalEncoder_) {
-        svcTemporalEncoder_->stop();
-    }
-    
-    for (auto it = svcSpatialDecoders_.begin(); it != svcSpatialDecoders_.end(); it++) {    // stop all svc decoders
-        if (*it == NULL) {
-            continue;
-        }
-        
-        (*it)->stop();
-    }
-    
-    for (auto it = svcTemporalDecoders_.begin(); it != svcTemporalDecoders_.end(); it++) {    // stop all svc decoders
+    for (auto it = svcH264Decoders_.begin(); it != svcH264Decoders_.end(); it++) {    // stop all svc decoders
         if (*it == NULL) {
             continue;
         }
@@ -232,11 +214,7 @@ void SVCProj::initH264Decoder() {
             SSourcePicture nullSourcePic;
             av_log(NULL, AV_LOG_DEBUG, "H264Decoder: send a terminal signal to SVC spatial encoder\n");
             memset(&nullSourcePic, 0, sizeof(SSourcePicture));
-            svcSpatialEncoder_->put(std::move(nullSourcePic));
-            
-            av_log(NULL, AV_LOG_DEBUG, "H264Decoder: send a terminal signal to SVC temporal encoder\n");
-            memset(&nullSourcePic, 0, sizeof(SSourcePicture));
-            svcTemporalEncoder_->put(std::move(nullSourcePic));
+            svcH264Encoder_->put(std::move(nullSourcePic));
             return;
         }
         
@@ -247,22 +225,18 @@ void SVCProj::initH264Decoder() {
         
         // send I420 picture to SVC Spatial encoder
         SSourcePicture spatialPic = createSSourcePicture(frame);
-        svcSpatialEncoder_->put(std::move(spatialPic));
-        
-        // send I420 picture to SVC Temporal encoder
-        SSourcePicture temporalPic = createSSourcePicture(frame);
-        svcTemporalEncoder_->put(std::move(temporalPic));
+        svcH264Encoder_->put(std::move(spatialPic));
     });
 }
 
-void SVCProj::initSVCSpatialEncoder(int width, int height) {
-    svcSpatialEncoder_ = std::make_shared<SVCEncoder>(syncQueueMaxSize_);
-    auto status = svcSpatialEncoder_->initSVCEncoder(width, height, svcSpatialNum_, spatialSettings_);
-    av_log(NULL, AV_LOG_DEBUG, "initSVCSpatialEncoder: status = %d\n", status);
-    svcSpatialEncoder_->start([this](bool eof, int status, SFrameBSInfo *pEncodedInfo) {
+void SVCProj::initSVCH264Encoder(int width, int height) {
+    svcH264Encoder_ = std::make_shared<SVCEncoder>(syncQueueMaxSize_);
+    auto status = svcH264Encoder_->initSVCEncoder(width, height, svcTemporalNum_, svcSpatialNum_, spatialSettings_);
+    av_log(NULL, AV_LOG_DEBUG, "initSVCH264Encoder: status = %d\n", status);
+    svcH264Encoder_->start([this](bool eof, int status, SFrameBSInfo *pEncodedInfo) {
         if (eof) {  // EOF
             av_log(NULL, AV_LOG_DEBUG, "SVCSpatialEncoder: send a terminaate signal to all SVC Temporal decoders\n");
-            for (auto it = svcSpatialDecoders_.begin(); it != svcSpatialDecoders_.end(); it++) {
+            for (auto it = svcH264Decoders_.begin(); it != svcH264Decoders_.end(); it++) {
                 if(*it == NULL) {
                     continue;
                 }
@@ -279,157 +253,102 @@ void SVCProj::initSVCSpatialEncoder(int width, int height) {
             return;
         }
         
-        //  dispatch SVC H264 compressed data to corresponding SVC Spatial decoder correctly
-        for (auto idx = 0; idx < pEncodedInfo->iLayerNum; idx++) {
-            auto totalSize = 0, bufferPtrOffset = 0;
-            auto layerInfo = pEncodedInfo->sLayerInfo[idx];
-            auto curSpatialId = layerInfo.uiSpatialId;
-            for (auto i = 0; i <= idx; i++) {   // accumulate size all needed
+        //  dispatch SVC H264 compressed data to corresponding SVC decoder correctly
+        /* 1. spatial rules
+         * 低分辨率是基本层，增强层是建立在基本层之上的差值。故:高分辨率需要将基本层与对应的增强层组合
+         * 例如：完整的1080p的NAL = NAL_360p(基本层) + NAL_480p(增强层) + NAL_720p(增强层) + NAL_1080p(增强层)
+         * 2. temporal rules
+         * iTemporalLayerNum 的值为 1 时，使用 uiGopSize = 1 的配置，即每一帧为一组，每一组的uiTemporalId 值为 0
+         * iTemporalLayerNum 的值为 2 时，使用 uiGopSize = 2 的配置，即每两帧为一组，每一组中对应的uiTemporalId 为 [0, 1]
+         * iTemporalLayerNum 的值为 3 时，使用 uiGopSize = 4 的配置，即每四帧为一组，每一组中对应的uiTemporalId 为 [0, 2, 1, 2]
+         * iTemporalLayerNum 的值为 4 时，使用 uiGopSize = 8 的配置，即每八帧为一组，每一组中对应的uiTemporalId 为 [0, 3, 2, 3, 1, 3, 2, 3]
+         */
+        
+        // 每一次只有一个temporalId但是可能有多个spatialId, temporal层面的NAL不需要拼接， Spatial层面的NAL需要拼接。
+        auto totalLayerNum = pEncodedInfo->iLayerNum;
+        for (auto curLayerIndex = 0; curLayerIndex < totalLayerNum; curLayerIndex++) {
+            auto curLayerInfo = pEncodedInfo->sLayerInfo[curLayerIndex];
+            auto curSpatialId = curLayerInfo.uiSpatialId;
+            auto curTemporalId = curLayerInfo.uiTemporalId;
+            av_log(NULL, AV_LOG_DEBUG, "svcH264Encoder: temporal_id = %d, spatial_id = %d\n", curTemporalId, curSpatialId);
+
+            auto totalSize = 0; // 计算出某空域NAL所需要的完整数据大小，因为spatial NAL是按照低分辨率到高分辨率出场的, 累加即可。
+            for (auto i = 0; i <= curLayerIndex; i++) {
                 auto tmp = pEncodedInfo->sLayerInfo[i];
                 for (auto nalIdx = 0; nalIdx < tmp.iNalCount; nalIdx++) {
                     totalSize += tmp.pNalLengthInByte[nalIdx];
                 }
             }
             
-            auto svcDecoder = svcSpatialDecoders_.at(curSpatialId);
-            if (svcDecoder == NULL) {
-                av_log(NULL, AV_LOG_ERROR, "SVCSpatialEncoder: Fatal Something Wrong\n");
-                return ;
-            }
-            
-            // dispatch elements layer and enhancement layer
-            // 低分辨率是基本层，增强层是建立在基本层之上的差值。故:高分辨率需要将基本层与对应的增强层组合
-            auto pBuf = new unsigned char[totalSize];
-            for (auto j = 0; j <= idx; j++) {
-                auto totalSizeOfCurrentLayerInfo = 0;
-                auto tmp = pEncodedInfo->sLayerInfo[j];
-                for (auto nalIdx = 0; nalIdx < tmp.iNalCount; nalIdx++) {
-                    totalSizeOfCurrentLayerInfo += tmp.pNalLengthInByte[nalIdx];
-                }
-                
-                memcpy(pBuf + bufferPtrOffset, tmp.pBsBuf, totalSizeOfCurrentLayerInfo);
-                bufferPtrOffset += totalSizeOfCurrentLayerInfo;
-            }
-            
-            SVCH264Data data = { .compressedDataLen = totalSize, .compressedData = pBuf, .timestamp = pEncodedInfo->uiTimeStamp};
-            svcDecoder->put(std::move(data));
-        }
-    });
-}
-
-void SVCProj::initSVCTemporalEncoder(int width, int height) {
-    svcTemporalEncoder_ = std::make_shared<SVCEncoder>(syncQueueMaxSize_);
-    auto status = svcTemporalEncoder_->initSVCEncoder(width, height, spatialSettings_.back().bitrate, svcTemporalNum_);
-    av_log(NULL, AV_LOG_DEBUG, "initSVCTemporalEncoder: status = %d\n", status);
-    svcTemporalEncoder_->start([this](bool eof, int status, SFrameBSInfo *pEncodedInfo){
-        if (eof) {  // EOF
-            av_log(NULL, AV_LOG_DEBUG, "SVCTemporalEncoder: send a terminaate signal to all SVC Temporal decoders\n");
-            for (auto it = svcTemporalDecoders_.begin(); it != svcTemporalDecoders_.end(); it++) {
-                if(*it == NULL) {
-                    continue;
-                }
-                
-                SVCH264Data nullData = { .compressedDataLen = 0, .compressedData = NULL};
-                (*it)->put(std::move(nullData));
-            }
-            return ;
-        }
-        
-        // not EOF
-        if (pEncodedInfo->eFrameType == videoFrameTypeInvalid || pEncodedInfo->eFrameType == videoFrameTypeSkip) {
-            av_log(NULL, AV_LOG_ERROR, "SVCTemporalEncoder: frame type is invalid, frameType = %d\n", pEncodedInfo->eFrameType);
-            return;
-        }
-        
-        //  dispatch SVC H264 compressed data to corresponding SVC Temporal decoder correctly
-        for (auto idx = 0; idx < pEncodedInfo->iLayerNum; idx++) {
-            auto layerInfo = pEncodedInfo->sLayerInfo[idx];
-            auto curTemporalId = layerInfo.uiTemporalId;
-            auto totalSizeOfCurrentLayerInfo = 0;
-            for (auto nalIdx = 0; nalIdx < layerInfo.iNalCount; nalIdx++) {
-                totalSizeOfCurrentLayerInfo += layerInfo.pNalLengthInByte[nalIdx];
-            }
-            
-            /*
-             iTemporalLayerNum 的值为 1 时，使用 uiGopSize = 1 的配置，即每一帧为一组，每一组的 uiTemporalId 值为 0
-             iTemporalLayerNum 的值为 2 时，使用 uiGopSize = 2 的配置，即每两帧为一组，每一组中对应的uiTemporalId 为 [0, 1]
-             iTemporalLayerNum 的值为 3 时，使用 uiGopSize = 4 的配置，即每四帧为一组，每一组中对应的uiTemporalId 为 [0, 2, 1, 2]
-             iTemporalLayerNum 的值为 4 时，使用 uiGopSize = 8 的配置，即每八帧为一组，每一组中对应的uiTemporalId 为 [0, 3, 2, 3, 1, 3, 2, 3]
+            /* T0 需要 temporalId = {0}的NAL,
+             * T1 需要 temporalId = {0, 1}的NAL,
+             * T2 需要 temporalId = {0, 1, 2}的NAL,
+             * T3 需要 temporalId = {0, 1, 2, 3}的NAL
+             * 即 NAL的temporal = 0时，需要向 T0，T1，T2，T3 发送。
+             * NAL的temporal = 1时，需要向T1，T2，T3 发送。
+             * 以此类推....
              */
-            
-            for (auto i = 0; i < svcTemporalNum_ - curTemporalId; i++) {
-                auto svcDecoder = svcTemporalDecoders_.at(svcTemporalNum_ - i - 1);
+            for (auto temporalId = 0; temporalId < svcTemporalNum_ - curTemporalId; temporalId++) {
+                // 根据上面的提示， 给需要temporalId=x的decoder发送完整的NAL，必须得到目标decoder。
+                auto decoderAt = (svcTemporalNum_ - temporalId - 1) * MAX_SPATIAL_LAYER_NUM + curSpatialId;
+                auto svcDecoder = svcH264Decoders_.at(decoderAt);
                 if (svcDecoder == NULL) {
-                    av_log(NULL, AV_LOG_ERROR, "SVCTemporalEncoder: Fatal Something Wrong\n");
+                    av_log(NULL, AV_LOG_ERROR, "SVCH264Encoder: Fatal Something Wrong\n");
                     continue;
                 }
                 
-                auto pBuf = new unsigned char[totalSizeOfCurrentLayerInfo];
-                memcpy(pBuf, layerInfo.pBsBuf, totalSizeOfCurrentLayerInfo);
-                SVCH264Data data = { .compressedDataLen = totalSizeOfCurrentLayerInfo, .compressedData = pBuf, .timestamp = pEncodedInfo->uiTimeStamp};
+                // 组合spatial NAL(多个NAL组合成一个一个完整的NAL)
+                auto bufferPtrOffset = 0;
+                auto pBuf = new unsigned char[totalSize];
+                for (auto j = 0; j <= curLayerIndex; j++) {
+                    auto totalSizeOfCurrentLayerInfo = 0;
+                    auto tmp = pEncodedInfo->sLayerInfo[j];
+                    for (auto nalIdx = 0; nalIdx < tmp.iNalCount; nalIdx++) {
+                        totalSizeOfCurrentLayerInfo += tmp.pNalLengthInByte[nalIdx];
+                    }
+                    
+                    memcpy(pBuf + bufferPtrOffset, tmp.pBsBuf, totalSizeOfCurrentLayerInfo);
+                    bufferPtrOffset += totalSizeOfCurrentLayerInfo;
+                }
+                
+                // dispatch NAL
+                SVCH264Data data = { .compressedDataLen = totalSize, .compressedData = pBuf, .timestamp = pEncodedInfo->uiTimeStamp};
                 svcDecoder->put(std::move(data));
             }
         }
     });
 }
 
-void SVCProj::initSVCSpatialDecoders() {
-    for (auto index = 0; index < svcSpatialNum_; index++) {
-        auto item = spatialSettings_.at(index);
-        std::string extraInfo = "SVC_S";
-        extraInfo.append(std::to_string(index)).append("_").append(std::to_string(item.width)).append("x").append(std::to_string(item.height));
-        auto svcDecoder = std::make_shared<SVCDecoder>(syncQueueMaxSize_, std::move(extraInfo));
-        auto status = svcDecoder->initSVCDecoder();
-        av_log(NULL, AV_LOG_DEBUG, "initSVCSpatialDecoders: status = %d\n", status);
-        svcSpatialDecoders_.at(index) = svcDecoder;
-        svcDecoder->start([this](bool eof, int status, SBufferInfo *pDecodedInfo, uchar *pDst, std::string &extra){
-            if (eof) {
-                av_log(NULL, NULL, "SVCSpatialDecoder[%s]:time to Game Over\n", extra.c_str());
-                return;
-            }
-            
-            if (status || pDecodedInfo->iBufferStatus != 1) {
-                av_log(NULL, AV_LOG_DEBUG, "SVCSpatialDecoder[%s]: Unavailable, status = %d, bufferStatus = %d\n", extra.c_str(), status, pDecodedInfo->iBufferStatus);
-                return;
-            }
-            
-            // can print some info about decoded yuv
-            auto inTimestamp = pDecodedInfo->uiInBsTimeStamp;
-            auto outTimestamp = pDecodedInfo->uiOutYuvTimeStamp;
-            auto width = pDecodedInfo->UsrData.sSystemBuffer.iWidth;
-            auto height = pDecodedInfo->UsrData.sSystemBuffer.iHeight;
-            av_log(NULL, AV_LOG_DEBUG, "SVCSpatialDecoder[%s]: outTimestamp = %lld, inTimestamp = %lld, width = %d, height = %d\n",
-                   extra.c_str(), outTimestamp, inTimestamp, width, height);
-        });
-    }
-}
-
-void SVCProj::initSVCTemporalDecoders() {
-    for (auto index = 0; index < svcTemporalNum_; index++) {
-        std::string extraInfo = "SVC_T";
-        auto svcDecoder = std::make_shared<SVCDecoder>(syncQueueMaxSize_, std::move(extraInfo.append(std::to_string(index))));
-        auto status = svcDecoder->initSVCDecoder();
-        av_log(NULL, AV_LOG_DEBUG, "initSVCTemporalDecoders: status = %d\n", status);
-        svcTemporalDecoders_.at(index) = svcDecoder;
-        // send decoded SVC info to user
-        svcDecoder->start([this](bool eof, int status, SBufferInfo *pDecodedInfo, uchar *pDst, std::string &extra){
-            if (eof) {
-                av_log(NULL, NULL, "SVCTemporalDecoder[%s]:time to Game Over\n", extra.c_str());
-                return;
-            }
-            
-            if (status || pDecodedInfo->iBufferStatus != 1) {
-                av_log(NULL, AV_LOG_DEBUG, "SVCTemporalDecoder[%s]: Unavailable, status = %d, bufferStatus = %d\n", extra.c_str(), status, pDecodedInfo->iBufferStatus);
-                return;
-            }
-            
-            // can print some info about decoded yuv
-            auto inTimestamp = pDecodedInfo->uiInBsTimeStamp;
-            auto outTimestamp = pDecodedInfo->uiOutYuvTimeStamp;
-            auto width = pDecodedInfo->UsrData.sSystemBuffer.iWidth;
-            auto height = pDecodedInfo->UsrData.sSystemBuffer.iHeight;
-            av_log(NULL, AV_LOG_DEBUG, "SVCTemporalDecoder[%s]: outTimestamp = %lld, inTimestamp = %lld, width = %d, height = %d\n",
-                   extra.c_str(), outTimestamp, inTimestamp, width, height);
-        });
+void SVCProj::initSVCH264Decoders() {
+    for (auto i = 0; i < svcTemporalNum_; i++) {
+        for (auto j = 0; j < svcSpatialNum_; j++) {
+            auto item = spatialSettings_.at(j);
+            std::string uniqueTag = "SVC_T";
+            uniqueTag.append(std::to_string(i)).append("_").append(std::to_string(item.width)).append("x").append(std::to_string(item.height));
+            auto svcDecoder = std::make_shared<SVCDecoder>(syncQueueMaxSize_, std::move(uniqueTag));
+            auto status = svcDecoder->initSVCDecoder();
+            av_log(NULL, AV_LOG_DEBUG, "initSVCH264Decoders: status = %d\n", status);
+            svcH264Decoders_.at(i * MAX_SPATIAL_LAYER_NUM + j) = svcDecoder;
+            svcDecoder->start([this](bool eof, int status, SBufferInfo *pDecodedInfo, uchar *pDst, std::string &tag){
+                if (eof) {
+                    av_log(NULL, NULL, "SVCH264Decoder[%s]: time to Game Over, Bye...\n", tag.c_str());
+                    return;
+                }
+                
+                if (status || pDecodedInfo->iBufferStatus != 1) {
+                    av_log(NULL, AV_LOG_DEBUG, "SVCH264Decoder[%s]: Decoded Data is Unavailable, status: %d, bufferStatus: %d\n",
+                           tag.c_str(), status, pDecodedInfo->iBufferStatus);
+                    return;
+                }
+                
+                // can print some info about decoded yuv
+                auto inTimestamp = pDecodedInfo->uiInBsTimeStamp;
+                auto outTimestamp = pDecodedInfo->uiOutYuvTimeStamp;
+                auto width = pDecodedInfo->UsrData.sSystemBuffer.iWidth;
+                auto height = pDecodedInfo->UsrData.sSystemBuffer.iHeight;
+                av_log(NULL, AV_LOG_DEBUG, "SVCH264Decoder[%s]: outTimestamp: %lld, inTimestamp: %lld, width: %d, height: %d\n",
+                       tag.c_str(), outTimestamp, inTimestamp, width, height);
+            });
+        }
     }
 }

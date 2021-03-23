@@ -11,7 +11,7 @@ SVCEncoder::SVCEncoder(int maxSize): pictureQueue_(std::make_shared<SyncQueue<SS
 
 SVCEncoder::~SVCEncoder(){}
 
-int SVCEncoder::initSVCEncoder(int width, int height, int spatialNum, std::vector<SpatialData> &spatials) {
+int SVCEncoder::initSVCEncoder(int width, int height, int temporalNum, int spatialNum, std::vector<SpatialData> &spatials) {
     TagEncParamExt encParam;
     auto ret = WelsCreateSVCEncoder(&svcEncoder_);
     if (cmResultSuccess != ret) {
@@ -34,7 +34,7 @@ int SVCEncoder::initSVCEncoder(int width, int height, int spatialNum, std::vecto
     encParam.eSpsPpsIdStrategy = CONSTANT_ID;
     encParam.bPrefixNalAddingCtrl = false;
     encParam.iSpatialLayerNum = spatialNum;
-    encParam.iTemporalLayerNum = 1;
+    encParam.iTemporalLayerNum = temporalNum;
 
     for (auto i = spatialNum - 1; i >= 0; i--) {
         auto item = spatials.at(i);
@@ -45,47 +45,6 @@ int SVCEncoder::initSVCEncoder(int width, int height, int spatialNum, std::vecto
         encParam.sSpatialLayers[i].iSpatialBitrate = item.bitrate;
         encParam.sSpatialLayers[i].iMaxSpatialBitrate = item.bitrate * 3 >> 1;
     }
-    
-    ret = svcEncoder_->InitializeExt(&encParam);
-    if (ret != 0) {
-        return ret;
-    }
-    
-    encoderInitialized_ = true;
-    return ret;
-}
-
-int SVCEncoder::initSVCEncoder(int width, int height, int bitrate, int temporalNum) {
-    TagEncParamExt encParam;
-    auto ret = WelsCreateSVCEncoder(&svcEncoder_);
-    if (cmResultSuccess != ret) {
-        return -1;
-    }
-    
-    memset(&encParam, 0, sizeof(SEncParamExt));
-    svcEncoder_->GetDefaultParams(&encParam);
-    encParam.iUsageType = CAMERA_VIDEO_REAL_TIME;
-    encParam.fMaxFrameRate = 25;
-    encParam.iPicWidth = width;
-    encParam.iPicHeight = height;
-    encParam.iRCMode = RC_QUALITY_MODE;
-    encParam.bEnableDenoise = false;
-    encParam.bEnableBackgroundDetection = true;
-    encParam.bEnableAdaptiveQuant = false;
-    encParam.bEnableFrameSkip = false;  //true
-    encParam.bEnableLongTermReference = false;
-    encParam.uiIntraPeriod = 50;
-    encParam.eSpsPpsIdStrategy = CONSTANT_ID;
-    encParam.bPrefixNalAddingCtrl = false;
-    encParam.iSpatialLayerNum = 1;
-    encParam.iTemporalLayerNum = temporalNum;
-
-    encParam.iTargetBitrate = bitrate;
-    encParam.sSpatialLayers[0].iVideoWidth = width;
-    encParam.sSpatialLayers[0].iVideoHeight = height;
-    encParam.sSpatialLayers[0].fFrameRate = 25;
-    encParam.sSpatialLayers[0].iSpatialBitrate = bitrate;
-    encParam.sSpatialLayers[0].iMaxSpatialBitrate = bitrate * 3 >> 1;
     
     ret = svcEncoder_->InitializeExt(&encParam);
     if (ret != 0) {

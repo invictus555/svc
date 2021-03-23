@@ -49,7 +49,7 @@ public:
     void stop();
             
 private:
-    std::string extraInfo_;
+    std::string tag_;
     
     bool decoderInitialized_;
     

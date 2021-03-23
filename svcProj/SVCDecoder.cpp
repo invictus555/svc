@@ -7,7 +7,7 @@
 
 #include "SVCDecoder.hpp"
 
-SVCDecoder::SVCDecoder(int maxSize, std::string &&extraInfo): svcH264DataQueue_(std::make_shared<SyncQueue<SVCH264Data>>(maxSize)), svcDecoder_(NULL), decoderThread_(NULL), decoderInitialized_(false), extraInfo_(extraInfo){}
+SVCDecoder::SVCDecoder(int maxSize, std::string &&tag): svcH264DataQueue_(std::make_shared<SyncQueue<SVCH264Data>>(maxSize)), svcDecoder_(NULL), decoderThread_(NULL), decoderInitialized_(false), tag_(tag){}
 
 SVCDecoder::~SVCDecoder() {}
 
@@ -57,14 +57,14 @@ int SVCDecoder::start(NotifyUserCB notifyUser) {
             dstInfo.uiInBsTimeStamp = svcH264Data.timestamp;
             status = svcDecoder_->DecodeFrame2(inputBuffer, inputBufferLen, &pDstBuf, &dstInfo);
             if (notifyUser) {
-                notifyUser(false, status, &dstInfo, pDstBuf, extraInfo_);
+                notifyUser(false, status, &dstInfo, pDstBuf, tag_);
             }
             
             delete[] inputBuffer;
         }
         
         if (notifyUser) {
-            notifyUser(true, 0, NULL, NULL, extraInfo_);
+            notifyUser(true, 0, NULL, NULL, tag_);
         }
         
         if (svcDecoder_) {

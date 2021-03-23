@@ -33,10 +33,8 @@ public:
     
     ~SVCEncoder();
     
-    int initSVCEncoder(int width, int height, int spatialNum, std::vector<SpatialData> &spatials);
+    int initSVCEncoder(int width, int height, int temporalNum, int spatialNum, std::vector<SpatialData> &spatials);
     
-    int initSVCEncoder(int width, int height, int bitrate, int temporalNum);
-
     int start(NotifySVCDecoderCB notifySVCDecoder);
     
     void put(SSourcePicture && sourcePic);

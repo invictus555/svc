@@ -11,8 +11,8 @@
 int main(int argc, const char * argv[])
 {
     auto queueMaxSize = 50;
-    auto spatialNum = std::min(4, MAX_SPATIAL_LAYER_NUM);
-    auto temporalNum = std::min(4, MAX_TEMPORAL_LAYER_NUM);
+    auto spatialNum = std::min(2, MAX_SPATIAL_LAYER_NUM);
+    auto temporalNum = std::min(2, MAX_TEMPORAL_LAYER_NUM);
     std::initializer_list<SpatialData> spatialData = {
         {640,   360,    600 * 1024},    // 360p 600Kb
         {854,   480,    1000 * 1024},   // 480p 1000Kb
