@@ -16,13 +16,25 @@ using namespace std;
 class Localize
 {
 public:
-    Localize(std::string filePath);
+    Localize(std::string &filePath);
+    
+    Localize(std::string &dir, std::string &fileName);
+    
     ~Localize();
     
     int open();
+    
     int write(const unsigned char *buffer, int size);
-    void flush();
+    
+    int write(unsigned char **ppDst, int stride, int width, int height);
+    
+    int write(const unsigned char *buf, int stride, int width, int height);
+
+    Localize &flush();
+    
     void close();
+    
+    
 private:
     FILE  *handler_;
     std::string filePath_;

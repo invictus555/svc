@@ -16,6 +16,7 @@
 #include <stdarg.h>
 #include <iostream>
 
+#include "Localize.hpp"
 #include "SyncQueue.hpp"
 #include "svc/codec_api.h"
 
@@ -25,16 +26,18 @@ struct SVCH264Data {
     unsigned char * compressedData;
 };
 
+class SVCDecoder;
 using uchar = unsigned char;
 using SVCH264Data = struct SVCH264Data;
+using LocalizeShr = std::shared_ptr<Localize>;
 using DecoderThread = std::shared_ptr<std::thread>;
 using SVCH264DataQueue = std::shared_ptr<SyncQueue<SVCH264Data>>;
-using NotifyUserCB = std::function<void (bool eof, int status, SBufferInfo *pDecodedInfo, uchar *pDst, std::string &extra)>;
+using NotifyUserCB = std::function<void (bool eof, int status, SBufferInfo *pDecodedInfo, uchar **ppDst, SVCDecoder *thiz)>;
 
 class SVCDecoder {
  
 public:
-    SVCDecoder(int maxSize, std::string &&extraInfo);
+    SVCDecoder(int maxSize, std::string &dumpDir, std::string &&extraInfo);
     
     ~SVCDecoder();
     
@@ -48,8 +51,17 @@ public:
     
     void stop();
             
+    LocalizeShr &dumpSvcHandler();
+    
+    LocalizeShr &dumpYuvHandler();
+    
+    const std::string &tag() ;
 private:
     std::string tag_;
+
+    LocalizeShr dumpSvcHandler_;
+    
+    LocalizeShr dumpYuvHandler_;
     
     bool decoderInitialized_;
     

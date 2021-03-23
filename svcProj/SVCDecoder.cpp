@@ -7,9 +7,29 @@
 
 #include "SVCDecoder.hpp"
 
-SVCDecoder::SVCDecoder(int maxSize, std::string &&tag): svcH264DataQueue_(std::make_shared<SyncQueue<SVCH264Data>>(maxSize)), svcDecoder_(NULL), decoderThread_(NULL), decoderInitialized_(false), tag_(tag){}
+SVCDecoder::SVCDecoder(int maxSize, std::string &dumpDir, std::string &&tag): svcH264DataQueue_(std::make_shared<SyncQueue<SVCH264Data>>(maxSize)), svcDecoder_(NULL), decoderThread_(NULL), decoderInitialized_(false), tag_(tag), dumpSvcHandler_(nullptr), dumpYuvHandler_(nullptr){
+    if (!dumpDir.empty() && !tag_.empty()) {
+        auto svcTempName = tag_;
+        dumpSvcHandler_ = std::make_shared<Localize>(dumpDir, svcTempName.append(".data"));
+        dumpSvcHandler_->open();
+        
+        auto yuvTempName = tag_;
+        dumpYuvHandler_ = std::make_shared<Localize>(dumpDir, yuvTempName.append(".yuv"));
+        dumpYuvHandler_->open();
+    }
+}
 
-SVCDecoder::~SVCDecoder() {}
+SVCDecoder::~SVCDecoder() {
+    if (dumpYuvHandler_) {
+        dumpYuvHandler_->flush();
+        dumpSvcHandler_->close();
+    }
+    
+    if (dumpSvcHandler_) {
+        dumpSvcHandler_->flush();
+        dumpSvcHandler_->close();
+    }
+}
 
 int SVCDecoder::initSVCDecoder() {
     SDecodingParam decParam;
@@ -27,7 +47,7 @@ int SVCDecoder::initSVCDecoder() {
     if (ret != 0) {
         return -2;
     }
-    
+
     decoderInitialized_ = true;
     return 0;
 }
@@ -57,14 +77,14 @@ int SVCDecoder::start(NotifyUserCB notifyUser) {
             dstInfo.uiInBsTimeStamp = svcH264Data.timestamp;
             status = svcDecoder_->DecodeFrame2(inputBuffer, inputBufferLen, &pDstBuf, &dstInfo);
             if (notifyUser) {
-                notifyUser(false, status, &dstInfo, pDstBuf, tag_);
+                notifyUser(false, status, &dstInfo, &pDstBuf, this);
             }
             
             delete[] inputBuffer;
         }
         
         if (notifyUser) {
-            notifyUser(true, 0, NULL, NULL, tag_);
+            notifyUser(true, 0, NULL, NULL, this);
         }
         
         if (svcDecoder_) {
@@ -96,4 +116,14 @@ void SVCDecoder::interrupt() {
     }
 }
 
+LocalizeShr &SVCDecoder::dumpSvcHandler() {
+    return dumpSvcHandler_;
+}
 
+LocalizeShr &SVCDecoder::dumpYuvHandler() {
+    return dumpYuvHandler_;
+}
+
+const std::string &SVCDecoder::tag() {
+    return tag_;
+}

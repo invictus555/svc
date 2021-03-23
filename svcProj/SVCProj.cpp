@@ -235,7 +235,7 @@ void SVCProj::initSVCH264Encoder(int width, int height) {
     av_log(NULL, AV_LOG_DEBUG, "initSVCH264Encoder: status = %d\n", status);
     svcH264Encoder_->start([this](bool eof, int status, SFrameBSInfo *pEncodedInfo) {
         if (eof) {  // EOF
-            av_log(NULL, AV_LOG_DEBUG, "SVCSpatialEncoder: send a terminaate signal to all SVC Temporal decoders\n");
+            av_log(NULL, AV_LOG_DEBUG, "SVCH264Encoder: send a terminaate signal to all SVC Temporal decoders\n");
             for (auto it = svcH264Decoders_.begin(); it != svcH264Decoders_.end(); it++) {
                 if(*it == NULL) {
                     continue;
@@ -249,7 +249,7 @@ void SVCProj::initSVCH264Encoder(int width, int height) {
         
         // not EOF
         if (pEncodedInfo->eFrameType == videoFrameTypeInvalid || pEncodedInfo->eFrameType == videoFrameTypeSkip) {
-            av_log(NULL, AV_LOG_ERROR, "SVCSpatialEncoder: frame type is invalid, frameType = %d\n", pEncodedInfo->eFrameType);
+            av_log(NULL, AV_LOG_ERROR, "SVCH264Encoder: frame type is invalid, frameType = %d\n", pEncodedInfo->eFrameType);
             return;
         }
         
@@ -313,6 +313,7 @@ void SVCProj::initSVCH264Encoder(int width, int height) {
                 
                 // dispatch NAL
                 SVCH264Data data = { .compressedDataLen = totalSize, .compressedData = pBuf, .timestamp = pEncodedInfo->uiTimeStamp};
+                svcDecoder->dumpSvcHandler()->write(pBuf, totalSize);
                 svcDecoder->put(std::move(data));
             }
         }
@@ -325,19 +326,19 @@ void SVCProj::initSVCH264Decoders() {
             auto item = spatialSettings_.at(j);
             std::string uniqueTag = "SVC_T";
             uniqueTag.append(std::to_string(i)).append("_").append(std::to_string(item.width)).append("x").append(std::to_string(item.height));
-            auto svcDecoder = std::make_shared<SVCDecoder>(syncQueueMaxSize_, std::move(uniqueTag));
+            auto svcDecoder = std::make_shared<SVCDecoder>(syncQueueMaxSize_, dumpDataDir_, std::move(uniqueTag));
             auto status = svcDecoder->initSVCDecoder();
             av_log(NULL, AV_LOG_DEBUG, "initSVCH264Decoders: status = %d\n", status);
             svcH264Decoders_.at(i * MAX_SPATIAL_LAYER_NUM + j) = svcDecoder;
-            svcDecoder->start([this](bool eof, int status, SBufferInfo *pDecodedInfo, uchar *pDst, std::string &tag){
+            svcDecoder->start([this](bool eof, int status, SBufferInfo *pDecodedInfo, uchar **ppDst, SVCDecoder *thiz){
                 if (eof) {
-                    av_log(NULL, NULL, "SVCH264Decoder[%s]: time to Game Over, Bye...\n", tag.c_str());
+                    av_log(NULL, NULL, "SVCH264Decoder[%s]: time to Game Over, Bye...\n", thiz->tag().c_str());
                     return;
                 }
                 
                 if (status || pDecodedInfo->iBufferStatus != 1) {
                     av_log(NULL, AV_LOG_DEBUG, "SVCH264Decoder[%s]: Decoded Data is Unavailable, status: %d, bufferStatus: %d\n",
-                           tag.c_str(), status, pDecodedInfo->iBufferStatus);
+                           thiz->tag().c_str(), status, pDecodedInfo->iBufferStatus);
                     return;
                 }
                 
@@ -346,8 +347,12 @@ void SVCProj::initSVCH264Decoders() {
                 auto outTimestamp = pDecodedInfo->uiOutYuvTimeStamp;
                 auto width = pDecodedInfo->UsrData.sSystemBuffer.iWidth;
                 auto height = pDecodedInfo->UsrData.sSystemBuffer.iHeight;
-                av_log(NULL, AV_LOG_DEBUG, "SVCH264Decoder[%s]: outTimestamp: %lld, inTimestamp: %lld, width: %d, height: %d\n",
-                       tag.c_str(), outTimestamp, inTimestamp, width, height);
+                auto strideY = pDecodedInfo->UsrData.sSystemBuffer.iStride[0];
+                auto strideUV = pDecodedInfo->UsrData.sSystemBuffer.iStride[1];
+
+                av_log(NULL, AV_LOG_DEBUG, "SVCH264Decoder[%s]: outTimestamp: %lld, inTimestamp: %lld, width: %d, height: %d, stideY: %d, strideUV: %d\n",
+                       thiz->tag().c_str(), outTimestamp, inTimestamp, width, height, strideY, strideUV);
+                thiz->dumpYuvHandler()->write(ppDst, strideY, width, height);
             });
         }
     }
