@@ -313,7 +313,9 @@ void SVCProj::initSVCH264Encoder(int width, int height) {
                 
                 // dispatch NAL
                 SVCH264Data data = { .compressedDataLen = totalSize, .compressedData = pBuf, .timestamp = pEncodedInfo->uiTimeStamp};
-                svcDecoder->dumpSvcHandler()->write(pBuf, totalSize);
+                if (svcDecoder->dumpSvcHandler()) { // dump svc compressed data into file
+                    svcDecoder->dumpSvcHandler()->write(pBuf, totalSize);
+                }
                 svcDecoder->put(std::move(data));
             }
         }
@@ -352,7 +354,9 @@ void SVCProj::initSVCH264Decoders() {
 
                 av_log(NULL, AV_LOG_DEBUG, "SVCH264Decoder[%s]: outTimestamp: %lld, inTimestamp: %lld, width: %d, height: %d, stideY: %d, strideUV: %d\n",
                        thiz->tag().c_str(), outTimestamp, inTimestamp, width, height, strideY, strideUV);
-                thiz->dumpYuvHandler()->write(ppDst, strideY, width, height);
+                if (thiz->dumpYuvHandler()) {   // dump yuv which is decoded from svc into file
+                    thiz->dumpYuvHandler()->write(ppDst, strideY, width, height);
+                }
             });
         }
     }
